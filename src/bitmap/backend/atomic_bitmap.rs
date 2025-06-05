@@ -36,6 +36,27 @@ impl AtomicBitmap {
         }
     }
 
+    /// Create a new bitmap of `byte_size` with one bit per page using a user-supplied pointer
+    /// to AtomicU64.
+    pub unsafe fn from_raw_ptr(
+        map_ptr: *mut AtomicU64,
+        byte_size: usize,
+        page_size: NonZeroUsize
+    ) -> Self {
+        let num_pages = byte_size.div_ceil(page_size.get());
+        let map_size = num_pages.div_ceil(u64::BITS as usize);
+
+        // Create a Vec from the existing memory without copying
+        let map = Vec::from_raw_parts(map_ptr, map_size, map_size);
+
+        AtomicBitmap {
+            map,
+            size: num_pages,
+            byte_size,
+            page_size,
+        }
+    }
+
     /// Enlarge this bitmap with enough bits to track `additional_size` additional bytes at page granularity.
     /// New bits are initialized to zero.
     pub fn enlarge(&mut self, additional_size: usize) {
@@ -143,6 +164,11 @@ impl AtomicBitmap {
         for it in self.map.iter() {
             it.store(0, Ordering::Release);
         }
+    }
+
+    /// Get raw pointer to the underlying atomic bitmap.
+    pub fn as_ptr(&self) -> *const AtomicU64 {
+        self.map.as_ptr()
     }
 }
 
@@ -330,5 +356,112 @@ mod tests {
         for i in 0..128 {
             assert!(!b.is_bit_set(i));
         }
+    }
+
+    #[test]
+    fn test_from_raw_ptr() {
+        let byte_size = 1024;
+        let page_size = NonZeroUsize::new(128).unwrap();
+        let num_pages = (byte_size + page_size.get() - 1) / page_size.get();
+        let map_size = (num_pages + 63) / 64;
+
+        // Create vector using iterator
+        let mut raw_map: Vec<AtomicU64> = (0..map_size)
+            .map(|_| AtomicU64::new(0))
+            .collect();
+        let raw_ptr = raw_map.as_mut_ptr();
+
+        // Create bitmap from raw pointer
+        let bitmap = unsafe { AtomicBitmap::from_raw_ptr(raw_ptr, byte_size, page_size) };
+
+        // Check if the bitmap was created correctly
+        assert_eq!(bitmap.size, num_pages);
+        assert_eq!(bitmap.byte_size, byte_size);
+        assert_eq!(bitmap.page_size, page_size);
+        assert_eq!(bitmap.map.len(), map_size);
+
+        // Test functionality
+        bitmap.set_bit(0);
+        assert!(bitmap.is_bit_set(0));
+
+        // Let bitmap take ownership of the memory
+        std::mem::forget(raw_map);
+    }
+
+    #[test]
+    fn test_as_ptr() {
+        let byte_size = 1024;
+        let page_size = NonZeroUsize::new(128).unwrap();
+        let bitmap = AtomicBitmap::new(byte_size, page_size);
+
+        let ptr = bitmap.as_ptr();
+
+        // Ensure the pointer is not null
+        assert!(!ptr.is_null());
+
+        // Verify that the pointer points to the first element of the map
+        assert_eq!(ptr, bitmap.map.as_ptr());
+
+        // Test that we can read through the pointer
+        unsafe {
+            let atomic_ref: &AtomicU64 = &*ptr;
+            assert_eq!(atomic_ref.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn test_small_size() {
+        let byte_size = 1;
+        let page_size = NonZeroUsize::new(128).unwrap();
+
+        // Create a new bitmap directly
+        let bitmap = AtomicBitmap::new(byte_size, page_size);
+
+        // Check the bitmap properties
+        assert_eq!(bitmap.byte_size, 1);
+        assert_eq!(bitmap.page_size, page_size);
+        assert_eq!(bitmap.size, 1);  // One page needed for one byte
+        assert_eq!(bitmap.map.len(), 1);  // One u64 needed for one bit
+
+        // Test functionality
+        bitmap.set_bit(0);
+        assert!(bitmap.is_bit_set(0));
+    }
+
+    #[test]
+    fn test_zero_size() {
+        let byte_size = 0;
+        let page_size = NonZeroUsize::new(128).unwrap();
+
+        // Create a new bitmap directly
+        let bitmap = AtomicBitmap::new(byte_size, page_size);
+
+        // Check the bitmap properties
+        assert_eq!(bitmap.byte_size, 0);
+        assert_eq!(bitmap.page_size, page_size);
+        assert_eq!(bitmap.size, 0);
+        assert_eq!(bitmap.map.len(), 0);
+    }
+
+    #[test]
+    fn test_from_raw_ptr_and_as_ptr_consistency() {
+        let byte_size = 1024;
+        let page_size = NonZeroUsize::new(128).unwrap();
+
+        // Create original bitmap
+        let mut raw_map: Vec<AtomicU64> = (0..((byte_size + page_size.get() - 1) / page_size.get() + 63) / 64)
+            .map(|_| AtomicU64::new(0))
+            .collect();
+        let raw_ptr = raw_map.as_mut_ptr();
+
+        // Create bitmap from raw pointer
+        let bitmap = unsafe { AtomicBitmap::from_raw_ptr(raw_ptr, byte_size, page_size) };
+
+        // Test functionality
+        bitmap.set_bit(5);
+        assert!(bitmap.is_bit_set(5));
+
+        // Let bitmap take ownership of the memory
+        std::mem::forget(raw_map);
     }
 }

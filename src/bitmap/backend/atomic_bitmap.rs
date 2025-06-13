@@ -39,6 +39,27 @@ impl AtomicBitmap {
         }
     }
 
+    /// Create a new bitmap of `byte_size` with one bit per page using a user-supplied pointer
+    /// to AtomicU64.
+    pub unsafe fn from_raw_ptr(
+        map_ptr: *mut AtomicU64,
+        byte_size: usize,
+        page_size: NonZeroUsize
+    ) -> Self {
+        let num_pages = byte_size.div_ceil(page_size.get());
+        let map_size = num_pages.div_ceil(u64::BITS as usize);
+
+        // Create a Vec from the existing memory without copying
+        let map = Vec::from_raw_parts(map_ptr, map_size, map_size);
+
+        AtomicBitmap {
+            map,
+            size: num_pages,
+            byte_size,
+            page_size,
+        }
+    }
+
     /// Enlarge this bitmap with enough bits to track `additional_size` additional bytes at page granularity.
     /// New bits are initialized to zero.
     pub fn enlarge(&mut self, additional_size: usize) {
@@ -146,6 +167,11 @@ impl AtomicBitmap {
         for it in self.map.iter() {
             it.store(0, Ordering::Release);
         }
+    }
+
+    /// Get raw pointer to the underlying atomic bitmap.
+    pub fn as_ptr(&self) -> *const AtomicU64 {
+        self.map.as_ptr()
     }
 }
 
